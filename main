@@ -1,0 +1,696 @@
+# นำเข้าไลบรารีที่จำเป็น
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import cv2
+import seaborn as sns
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
+
+
+# 1. กำหนด Dataset
+dataset_path = 'dataset/images/images'
+
+# กำหนดขนาดภาพ
+img_size = 64
+X = []
+y = []
+
+# 2. อ่านชื่อ Class
+classes = [
+    folder for folder in os.listdir(dataset_path)
+    if os.path.isdir(os.path.join(dataset_path, folder))
+]
+
+classes.sort()
+
+print("Classes:", classes)
+
+# 3. Data Preprocessing
+for label, class_name in enumerate(classes):
+
+    class_path = os.path.join(dataset_path, class_name)
+
+    print(f"\nกำลังอ่าน Class: {class_name}")
+
+    # อ่านไฟล์ในแต่ละ Class
+    for image_file in os.listdir(class_path):
+
+        # ตรวจสอบว่าเป็นไฟล์ภาพหรือไม่
+        if not image_file.lower().endswith(
+            ('.jpg', '.jpeg', '.png', '.bmp')
+        ):
+            continue
+
+        # สร้าง Path ของภาพ
+        image_path = os.path.join(class_path, image_file)
+
+        # อ่านภาพ
+        img = cv2.imread(image_path)
+
+        # ตรวจสอบว่าภาพสามารถอ่านได้หรือไม่
+        if img is None:
+            print("ไม่สามารถอ่าน:", image_file)
+            continue
+
+        # Resize
+        img = cv2.resize(img, (img_size, img_size))
+
+        # BGR → RGB
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # Normalization
+        img = img.astype(np.float32) / 255.0
+        X.append(img)
+        y.append(label)
+
+# 4. แปลง List → NumPy Array
+X = np.array(X)
+y = np.array(y)
+
+print("\n========== Dataset ==========")
+
+print("จำนวนภาพ:", len(X))
+print("Shape ของ X:", X.shape)
+print("Shape ของ y:", y.shape)
+
+
+# 5. แบ่งข้อมูล Train / Test
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+print("X_train:", X_train.shape)
+print("X_test :", X_test.shape)
+print("y_train:", y_train.shape)
+print("y_test :", y_test.shape)
+
+# 6. แปลงรูปแบบข้อมูลสำหรับ CNN
+X_train = np.transpose(
+    X_train,
+    (0, 3, 1, 2)
+)
+
+X_test = np.transpose(
+    X_test,
+    (0, 3, 1, 2)
+)
+
+print("\n========== CNN Data ==========")
+
+print("X_train หลังเปลี่ยน:", X_train.shape)
+print("X_test หลังเปลี่ยน :", X_test.shape)
+# 7 NumPy → PyTorch Tensor
+X_train_tensor = torch.tensor(
+    X_train,
+    dtype=torch.float32
+)
+
+X_test_tensor = torch.tensor(
+    X_test,
+    dtype=torch.float32
+)
+
+y_train_tensor = torch.tensor(
+    y_train,
+    dtype=torch.long
+)
+
+y_test_tensor = torch.tensor(
+    y_test,
+    dtype=torch.long
+)
+
+print("X_train Tensor:", X_train_tensor.shape)
+print("y_train Tensor:", y_train_tensor.shape)
+# 8. เลือก Device
+device = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
+print("Device:", device)
+
+# 9. สร้าง CNN Model
+class CNN(nn.Module):
+
+    def __init__(self, num_classes):
+
+        super(CNN, self).__init__()
+        self.network = nn.Sequential(
+            # Convolution Layer 1
+            # Input: 3 channels (RGB)
+            # Output: 32 feature maps
+            nn.Conv2d(
+                in_channels=3,
+                out_channels=32,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(
+                kernel_size=2
+            ),
+            # Convolution Layer 2
+             nn.Conv2d(
+                in_channels=32,
+                out_channels=64,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(
+                kernel_size=2
+            ),
+             # Convolution Layer 3
+              nn.Conv2d(
+                in_channels=64,
+                out_channels=128,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.ReLU(),
+            nn.MaxPool2d(
+                kernel_size=2
+            )
+        )
+         # Adaptive Average Pooling    # ช่วยให้เปลี่ยนขนาดภาพได้ง่ายขึ้น
+        self.pool = nn.AdaptiveAvgPool2d(  
+            (4, 4)
+        )
+        # Fully Connected Layer    # 128 × 4 × 4 = 2048
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(
+                128 * 4 * 4,
+                128
+            ),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(
+                128,
+                num_classes
+            )
+        )
+
+    def forward(self, x):
+        # ผ่าน Convolution
+        x = self.features(x)
+        # ปรับขนาด Feature Map
+        x = self.pool(x)
+        # Classification
+        x = self.classifier(x)
+        return x
+
+# จำนวน Class
+num_classes = len(classes)
+# สร้าง Model
+model = CNN(
+    num_classes
+)
+# ส่ง Model ไป GPU/CPU
+model = model.to(device)
+print(model)
+
+#10. Loss Function
+criterion = nn.CrossEntropyLoss()
+
+# 11. Optimizer
+optimizer = optim.Adam(
+    model.parameters(),
+    lr=0.001
+)
+epochs = 100
+train_losses = []
+train_accuracies = []
+
+#12. Training
+for epoch in range(epochs):
+    # Training Mode
+    model.train()
+    X_train_device = X_train_tensor.to(device)
+    y_train_device = y_train_tensor.to(device)
+    # Forward
+    outputs = model(X_train_device)
+
+    # คำนวณ Loss
+    loss = criterion(
+        outputs,
+        y_train_device
+    )
+    # Backward
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    # Accuracy
+    predictions = torch.argmax(
+        outputs,
+        dim=1
+    )
+    accuracy = (
+        predictions == y_train_device
+    ).float().mean()
+
+    # เก็บค่า
+    train_losses.append(
+        loss.item()
+    )
+    train_accuracies.append(
+        accuracy.item()
+    )
+    # แสดงผล
+    print(
+        f"Epoch [{epoch+1}/{epochs}] "
+        f"Loss: {loss.item():.4f} "
+        f"Accuracy: {accuracy.item():.4f}"
+    )
+# 13. Testing
+model.eval()
+with torch.no_grad():
+
+    X_test_device = X_test_tensor.to(device)
+
+    outputs = model(X_test_device)
+
+    predictions = torch.argmax(
+        outputs,
+        dim=1
+    )
+
+# GPU → CPU → NumPy
+y_pred = predictions.cpu().numpy()
+y_true = y_test_tensor.numpy()
+
+# Accuracy
+accuracy = accuracy_score(
+    y_true,
+    y_pred
+)
+
+print("\n========== Test Result ==========")
+print(
+    f"Test Accuracy: {accuracy:.4f}"
+)
+# 14. Classification Report
+print("\n========== Classification Report ==========")
+print(
+    classification_report(
+        y_true,
+        y_pred,
+        target_names=classes
+    )
+)
+# 15. Confusion Matrix
+cm = confusion_matrix(
+    y_true,
+    y_pred
+)
+plt.figure(figsize=(8, 6))
+sns.heatmap(
+    cm,
+    annot=True,
+    fmt='d',
+    cmap='Blues',
+    xticklabels=classes,
+    yticklabels=classes
+)
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+
+plt.title(
+    "Confusion Matrix - CNN"
+)
+plt.tight_layout()
+plt.show()
+
+# 16. Loss Graph
+plt.figure(figsize=(8, 5))
+
+plt.plot(
+    train_losses,
+    label="Training Loss"
+)
+
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+
+plt.title(
+    "CNN Training Loss"
+)
+plt.legend()
+plt.grid()
+plt.show()
+
+#17. Accuracy Graph
+plt.figure(figsize=(8, 5))
+plt.plot(
+    train_accuracies,
+    label="Training Accuracy"
+)
+
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+
+plt.title(
+    "CNN Training Accuracy"
+)
+plt.legend()
+plt.grid()
+plt.show()
+
+#17. Export ลง Excel
+# Accuracy
+accuracy = accuracy_score(y_true, y_pred)
+
+# Classification Report
+report = classification_report(
+    y_true,
+    y_pred,
+    target_names=classes,
+    output_dict=True
+)
+
+# ใช้ Macro Average เป็นค่าประเมินโดยรวม
+precision = report["macro avg"]["precision"]
+recall = report["macro avg"]["recall"]
+f1_score = report["macro avg"]["f1-score"]
+
+# Confusion Matrix
+cm = confusion_matrix(
+    y_true,
+    y_pred
+)
+
+wb = Workbook()
+ws = wb.active
+ws.title = "CNN Results"
+# ============================================================
+ws["A1"] = "CNN Classification Results"
+ws["A1"].font = Font(
+    bold=True,
+    size=16
+)
+# ============================================================
+ws["A3"] = "Dataset Information"
+ws["A3"].font = Font(
+    bold=True,
+    size=12
+)
+dataset_info = [
+    ("Number of Images", len(X)),
+    ("Number of Classes", num_classes),
+    ("Image Size", f"{img_size} x {img_size}"),
+    ("Epochs", epochs)
+]
+
+for row, (name, value) in enumerate(dataset_info, start=4):
+
+    ws.cell(
+        row=row,
+        column=1,
+        value=name
+    )
+
+    ws.cell(
+        row=row,
+        column=2,
+        value=value
+    )
+
+# 3. Overall Performance
+ws["D3"] = "Overall Performance"
+ws["D3"].font = Font(
+    bold=True,
+    size=12
+)
+
+ws["D4"] = "Metric"
+ws["E4"] = "Score"
+
+ws["D4"].font = Font(bold=True)
+ws["E4"].font = Font(bold=True)
+
+metrics = [
+    ("Accuracy", accuracy),
+    ("Precision", precision),
+    ("Recall", recall),
+    ("F1-score", f1_score)
+]
+
+for row, (metric, value) in enumerate(metrics, start=5):
+
+    ws.cell(
+        row=row,
+        column=4,
+        value=metric
+    )
+
+    ws.cell(
+        row=row,
+        column=5,
+        value=value
+    )
+
+    ws.cell(
+        row=row,
+        column=5
+    ).number_format = "0.0000"
+
+# 4. Classification Report
+start_row = 11
+
+ws.cell(
+    row=start_row,
+    column=1,
+    value="Classification Report"
+)
+
+ws.cell(
+    row=start_row,
+    column=1
+).font = Font(
+    bold=True,
+    size=12
+)
+
+# Header
+headers = [
+    "Class",
+    "Precision",
+    "Recall",
+    "F1-score",
+    "Support"
+]
+
+for col, header in enumerate(headers, start=1):
+
+    cell = ws.cell(
+        row=start_row + 1,
+        column=col,
+        value=header
+    )
+
+    cell.font = Font(bold=True)
+    cell.alignment = Alignment(
+        horizontal="center"
+    )
+
+# ------------------------------------------------------------
+# รายงานแต่ละ Class
+# ------------------------------------------------------------
+
+row = start_row + 2
+
+for class_name in classes:
+
+    ws.cell(
+        row=row,
+        column=1,
+        value=class_name
+    )
+
+    ws.cell(
+        row=row,
+        column=2,
+        value=report[class_name]["precision"]
+    )
+
+    ws.cell(
+        row=row,
+        column=3,
+        value=report[class_name]["recall"]
+    )
+
+    ws.cell(
+        row=row,
+        column=4,
+        value=report[class_name]["f1-score"]
+    )
+
+    ws.cell(
+        row=row,
+        column=5,
+        value=report[class_name]["support"]
+    )
+
+    for col in range(2, 5):
+
+        ws.cell(
+            row=row,
+            column=col
+        ).number_format = "0.0000"
+
+    row += 1
+
+# Macro Average
+ws.cell(
+    row=row,
+    column=1,
+    value="Macro Avg"
+)
+
+ws.cell(
+    row=row,
+    column=2,
+    value=report["macro avg"]["precision"]
+)
+
+ws.cell(
+    row=row,
+    column=3,
+    value=report["macro avg"]["recall"]
+)
+
+ws.cell(
+    row=row,
+    column=4,
+    value=report["macro avg"]["f1-score"]
+)
+
+ws.cell(
+    row=row,
+    column=5,
+    value=report["macro avg"]["support"]
+)
+
+for col in range(1, 6):
+
+    ws.cell(
+        row=row,
+        column=col
+    ).font = Font(bold=True)
+
+for col in range(2, 5):
+
+    ws.cell(
+        row=row,
+        column=col
+    ).number_format = "0.0000"
+
+# 5. Confusion Matrix
+cm_start_row = 11
+cm_start_col = 7
+
+ws.cell(
+    row=cm_start_row,
+    column=cm_start_col,
+    value="Confusion Matrix"
+)
+
+ws.cell(
+    row=cm_start_row,
+    column=cm_start_col
+).font = Font(
+    bold=True,
+    size=12
+)
+
+# หัวตาราง Predicted
+ws.cell(
+    row=cm_start_row + 1,
+    column=cm_start_col,
+    value="Actual / Predicted"
+)
+
+ws.cell(
+    row=cm_start_row + 1,
+    column=cm_start_col
+).font = Font(bold=True)
+
+for col, class_name in enumerate(
+    classes,
+    start=cm_start_col + 1
+):
+
+    cell = ws.cell(
+        row=cm_start_row + 1,
+        column=col,
+        value=class_name
+    )
+
+    cell.font = Font(bold=True)
+    cell.alignment = Alignment(
+        horizontal="center"
+    )
+
+# ค่า Confusion Matrix
+for i, class_name in enumerate(classes):
+
+    # Actual
+    ws.cell(
+        row=cm_start_row + 2 + i,
+        column=cm_start_col,
+        value=class_name
+    ).font = Font(bold=True)
+
+    # Predicted
+    for j in range(len(classes)):
+
+        ws.cell(
+            row=cm_start_row + 2 + i,
+            column=cm_start_col + 1 + j,
+            value=int(cm[i, j])
+        ).alignment = Alignment(
+            horizontal="center"
+        )
+
+# 6. ปรับขนาด Column
+for column_cells in ws.columns:
+
+    max_length = 0
+
+    column_letter = get_column_letter(
+        column_cells[0].column
+    )
+
+    for cell in column_cells:
+
+        if cell.value is not None:
+
+            max_length = max(
+                max_length,
+                len(str(cell.value))
+            )
+
+    ws.column_dimensions[
+        column_letter
+    ].width = max_length + 3
+
+# 7. บันทึก Excel
+excel_filename = "CNN_Classification_Report.xlsx"
+
+wb.save(excel_filename)
+
+print("\n======================================")
+print("บันทึกผลลง Excel เรียบร้อยแล้ว")
+print("ไฟล์:", excel_filename)
+print("======================================")
